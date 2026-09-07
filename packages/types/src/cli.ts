@@ -12,6 +12,7 @@ export interface ExportArgs extends CommonArgs {
   'range'?: string
   'dark'?: boolean
   'with-clicks'?: boolean
+  'pptx-strict'?: boolean
   'executable-path'?: string
   'with-toc'?: boolean
   'per-slide'?: boolean

@@ -82,7 +82,9 @@ $ slidev export --format pptx-editable
 
 The slides are measured in the browser and rebuilt as PowerPoint shapes, so text is selectable and editable, boxes can be moved and recolored, and presenter notes are carried over as usual. This does not replace `--format pptx`, which stays the most visually faithful option.
 
-What stays a picture: anything PowerPoint has no equivalent for. That includes SVG (so Mermaid diagrams and icons), `<canvas>`, `<iframe>`, videos, KaTeX formulas, CSS gradients, `filter`, `backdrop-filter`, `mix-blend-mode` and `clip-path`. Only the element concerned becomes a picture, not the whole slide.
+Supported linear CSS gradients become native PowerPoint fills. SVG rectangles, circles, ellipses, lines, polygons, and supported paths become editable geometry. Path support includes straight segments and cubic and quadratic Bézier curves. Transforms and fill transparency are retained.
+
+Some content still needs a picture: SVG text, arc commands, rounded SVG rectangles, paint servers, masks, stroke effects, `<canvas>`, `<iframe>`, videos, KaTeX formulas, radial or layered CSS gradients, `filter`, `backdrop-filter`, `mix-blend-mode`, and `clip-path`. An SVG with unsupported content is captured as a whole, so its parts do not disappear. Linear gradients with custom background sizing, corner directions, or non-percentage stop positions also use this fallback.
 
 If a slide cannot be rebuilt safely, or ends up mostly pictures anyway, it falls back to the same image export used by `--format pptx`, for that slide alone, and the reason is printed.
 
@@ -93,6 +95,14 @@ Worth knowing before you send the file on:
 - Decorations a theme draws with `::before` or `::after` in normal flow are left out, and the export lists them. Code block line numbers are one of these: they come from a CSS counter, which has no text and no box that a computed style can report.
 
 Like `--format pptx`, this exports one slide per click step unless you pass `--with-clicks false`. `--per-slide` is not supported with it.
+
+To prevent screenshot fallbacks, use strict export:
+
+```bash
+$ slidev export --format pptx-editable --pptx-strict --with-clicks
+```
+
+Strict export stops before it writes a file if an element needs a screenshot, a color cannot be read, or a CSS decoration cannot be placed. The error identifies unsupported elements by source slide, click state, and element ID. Original bitmap images are allowed. If an image cannot be read, export stops instead of taking a screenshot. This check does not guarantee identical text layout in PowerPoint.
 
 ### PNGs and Markdown
 

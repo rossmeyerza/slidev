@@ -14,6 +14,8 @@ import type {
   SlideIr,
 } from './ir'
 import { isVisible, parseColor, withOpacity } from './color'
+import { parseLinearGradient } from './gradient'
+import { nativeSvg } from './svg'
 
 /**
  * `RawSnapshot` to `SlideIr`: every judgement in the exporter, in one pure module with
@@ -165,7 +167,7 @@ export function rasterReasonFor(node: RawNode, style: RawStyle | undefined): Ras
   // for.
   if (style.webkitBackgroundClip === 'text')
     return 'background-clip-text'
-  if (style.backgroundImage && style.backgroundImage !== 'none')
+  if (style.backgroundImage && style.backgroundImage !== 'none' && !parseLinearGradient(style))
     return 'background-image'
   if (style.filter && style.filter !== 'none')
     return 'filter'
@@ -594,6 +596,11 @@ function buildSlideIr(
       return
     boxed.add(node.id)
     const fill = withOpacity(parseColor(style.backgroundColor, unparsed), node.opacity)
+    const gradient = parseLinearGradient(style)
+    if (gradient) {
+      for (const stop of gradient.stops)
+        stop.color = withOpacity(stop.color, node.opacity)!
+    }
     const borders: [Border?, Border?, Border?, Border?] = [
       borderOf(style, 'Top', unparsed),
       borderOf(style, 'Right', unparsed),
@@ -604,16 +611,18 @@ function buildSlideIr(
     // Chromium keeps `border-radius` percentages in the computed value, so a
     // basis is needed: `border-radius: 50%` on a 200px box is 100px, not 50px.
     const radius = parseLength(style.borderTopLeftRadius, Math.min(node.rect.w, node.rect.h))
-    if (!isVisible(fill) && !hasBorder)
+    if (!isVisible(fill) && !hasBorder && !gradient)
       return
     const shadow = parseShadow(style.boxShadow, unparsed)
     // One shape per line fragment for a wrapped inline element, as the browser
     // paints; one rect over the union would fill the ragged line ends.
     const boxes = node.fragments?.length ? node.fragments : [node.rect]
     for (const source of boxes) {
-      const rect = clipToSlide(source, size)
-      if (!rect)
+      const visible = clipToSlide(source, size)
+      if (!visible)
         continue
+      // Keep the gradient's coordinate system when the slide clips its edge.
+      const rect = gradient ? source : visible
       const box: IrBox = { kind: 'box', sourceId: node.id, rect }
       if (isVisible(fill))
         box.fill = fill
@@ -623,11 +632,26 @@ function buildSlideIr(
         box.radius = radius
       if (shadow)
         box.shadow = shadow
+      if (gradient) {
+        // A separate base fill preserves alpha compositing under transparent stops.
+        if (box.fill)
+          push({ ...box, borders: undefined, shadow: undefined }, node)
+        box.fill = undefined
+        box.gradient = gradient
+      }
       push(box, node)
     }
   }
 
   function visit(node: RawNode): void {
+    if (node.svg) {
+      const paths = nativeSvg(node)
+      if (paths) {
+        for (const path of paths)
+          push(path, node)
+        return
+      }
+    }
     // A pseudo-element paints either an image or a short string, and has no children.
     if (node.tag === '::BEFORE' || node.tag === '::AFTER') {
       const style = styleOf(node)
@@ -784,6 +808,10 @@ function buildSlideIr(
 
   /** Every text node under an inline subtree, in document order. */
   function collectText(node: RawNode, out: RawNode[]): void {
+    if (node.svg && nativeSvg(node)) {
+      visit(node)
+      return
+    }
     if (node.tag === '#text') {
       out.push(node)
       return
@@ -1065,7 +1093,10 @@ export function normalize(snapshot: RawSnapshot, options: NormalizeOptions): Nor
     }
 
     const slideArea = raw.size.w * raw.size.h
-    const hasSourceText = raw.nodes.some(n => n.tag === '#text' && (n.text ?? '').trim())
+    // SVG title/desc nodes have text content but no painted glyphs. They must
+    // not turn a successfully converted drawing into a full-slide screenshot.
+    const hasSourceText = raw.nodes.some(n => n.tag === '#text' && (n.text ?? '').trim()
+      && (n.glyphRects ?? [n.rect]).some(rect => rect.w > 0 && rect.h > 0))
 
     // Both conditions describe a slide where vectorizing produced something
     // worse than the picture it replaced; degrade to what `--format pptx` does.

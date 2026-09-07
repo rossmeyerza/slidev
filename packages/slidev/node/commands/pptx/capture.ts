@@ -2,6 +2,7 @@ import type { Page } from 'playwright-chromium'
 import type { IrImage, IrRaster, Rect, SlideIr } from './ir'
 import type { RasterRequest } from './normalize'
 import { Buffer } from 'node:buffer'
+import { assertNativeExport } from './strict'
 
 /**
  * The only Playwright glue in the exporter. Rasterization runs as a second phase,
@@ -83,6 +84,13 @@ async function isolate(page: Page, id: number, hideDescendants: boolean): Promis
         html.style.backgroundColor = 'transparent'
       }
 
+      // An ancestor can contain direct text nodes as well as this element.
+      // Hiding sibling elements does not hide that text. Hide the ancestors
+      // and explicitly keep the target visible; visibility does not change layout.
+      const targetStyle = (target as HTMLElement).style
+      target.setAttribute(restoreAttribute, targetStyle.visibility || '')
+      targetStyle.visibility = 'visible'
+
       // Only correct when the descendants are redrawn as shapes afterwards;
       // a leaf's children are its artwork.
       if (hideDescendants) {
@@ -106,6 +114,7 @@ async function isolate(page: Page, id: number, hideDescendants: boolean): Promis
           }
           // The target keeps its own background: a backdrop is the thing captured.
           clear(parent)
+          hide(parent)
           node = parent
           continue
         }
@@ -117,6 +126,7 @@ async function isolate(page: Page, id: number, hideDescendants: boolean): Promis
             hide(sibling)
         }
         node = root.host
+        hide(node)
       }
       return true
     },
@@ -279,7 +289,7 @@ export interface CaptureReport {
   imagesDropped: number
   /** Captures that asked for isolation and could not find their element. A silent miss bakes the slide's own text into the picture, which is then drawn again as shapes. */
   isolationMissed: number
-  fallbackSlides: { no: number, reason: string }[]
+  fallbackSlides: { no: number, clickIndex: number, reason: string }[]
 }
 
 /**
@@ -310,7 +320,13 @@ export async function capture(
   page: Page,
   slides: SlideIr[],
   requests: RasterRequest[],
+  options: { strict?: boolean } = {},
 ): Promise<CaptureReport> {
+  if (options.strict) {
+    assertNativeExport(slides)
+    if (requests.length)
+      throw new Error('[slidev] Strict PPTX export does not permit screenshot requests')
+  }
   const report: CaptureReport = {
     rastersCaptured: 0,
     rastersFailed: 0,
@@ -377,10 +393,16 @@ export async function capture(
 
     for (const [sourceId, nodes] of imagesBySource) {
       let data = await fetchImage(page, nodes[0].data)
+      if (data && !isUsableDataUri(data))
+        data = undefined
       if (data) {
         report.imagesFetched++
       }
       else {
+        if (options.strict) {
+          const slide = slides.find(slide => slide.nodes.includes(nodes[0]))!
+          throw new Error(`[slidev] Strict PPTX export stopped at slide ${slide.no}, click ${slide.clickIndex}, element ${sourceId}: image could not be read without a screenshot. No file was written.`)
+        }
         // Unfetchable, or an SVG: screenshot the element instead, isolated so
         // the picture does not carry what the slide painted behind it.
         try {
@@ -425,13 +447,14 @@ export async function capture(
       const shot = await shoot(page, `[id="${slide.containerId}"]`)
       if (shot) {
         slide.fallbackPng = shot
-        report.fallbackSlides.push({ no: slide.no, reason: slide.fallbackReason })
+        report.fallbackSlides.push({ no: slide.no, clickIndex: slide.clickIndex, reason: slide.fallbackReason })
       }
       else {
         // Screenshot failed too. The slide keeps its shapes, but `normalize`
         // withheld its raster requests, so keep the warning and clear the reason.
         report.fallbackSlides.push({
           no: slide.no,
+          clickIndex: slide.clickIndex,
           reason: `${slide.fallbackReason}, and the replacement screenshot failed, so the slide is incomplete`,
         })
         slide.fallbackReason = undefined

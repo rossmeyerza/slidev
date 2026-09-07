@@ -16,6 +16,7 @@ import type {
   Rgba,
   SlideIr,
 } from './ir'
+import JSZip from 'jszip'
 import { INCHES_PER_PX, PT_PER_PX } from './ir'
 
 /**
@@ -180,7 +181,7 @@ function sameBorder(a?: Border, b?: Border): boolean {
     && a.color.a === b.color.a
 }
 
-function addBox(slide: PptxGenJS.Slide, shapeType: typeof PptxGenJS.ShapeType, node: IrBox): void {
+function addBox(slide: PptxGenJS.Slide, shapeType: typeof PptxGenJS.ShapeType, node: IrBox, objectName?: string): void {
   const borders = node.borders
   const uniform
     = borders
@@ -193,7 +194,7 @@ function addBox(slide: PptxGenJS.Slide, shapeType: typeof PptxGenJS.ShapeType, n
   // carry: its only border is drawn as its own edge below. Emitting it anyway
   // left a rectangle with neither fill nor outline specified, which PowerPoint
   // resolves from its default shape style rather than leaving blank.
-  if (!node.fill && !uniform && !node.shadow) {
+  if (!node.fill && !node.gradient && !uniform && !node.shadow) {
     for (const side of [0, 1, 2, 3] as const) {
       const border = borders?.[side]
       if (border && border.width > 0)
@@ -203,6 +204,7 @@ function addBox(slide: PptxGenJS.Slide, shapeType: typeof PptxGenJS.ShapeType, n
   }
 
   const options: Record<string, unknown> = {
+    objectName,
     x: inch(node.rect.x),
     y: inch(node.rect.y),
     w: inch(node.rect.w),
@@ -332,6 +334,8 @@ export async function buildPptx(
   if (options.subject)
     pptx.subject = options.subject
 
+  const gradients = new Map<number, Map<string, NonNullable<IrBox['gradient']>>>()
+
   for (const ir of slides) {
     const slide = pptx.addSlide()
 
@@ -349,15 +353,44 @@ export async function buildPptx(
       }
       for (const node of ir.nodes) {
         switch (node.kind) {
-          case 'box':
-            addBox(slide, pptx.ShapeType, node)
+          case 'box': {
+            const name = `slidev-native-${ir.nodes.indexOf(node)}`
+            addBox(slide, pptx.ShapeType, node, name)
+            if (node.gradient) {
+              const index = slides.indexOf(ir) + 1
+              const patches = gradients.get(index) ?? new Map()
+              patches.set(name, node.gradient)
+              gradients.set(index, patches)
+            }
             break
+          }
           case 'text':
             addText(slide, node)
             break
           case 'image':
           case 'raster':
             addPicture(slide, node)
+            break
+          case 'path':
+            // The runtime exposes custGeom; PptxGenJS omits it from its ShapeType declaration.
+            slide.addShape('custGeom' as PptxGenJS.ShapeType, {
+              x: inch(node.rect.x),
+              y: inch(node.rect.y),
+              w: inch(node.rect.w),
+              h: inch(node.rect.h),
+              fill: node.fill ? { color: hex(node.fill), transparency: transparency(node.fill) } : undefined,
+              line: node.stroke ? { color: hex(node.stroke.color), transparency: transparency(node.stroke.color), width: pt(node.stroke.width) } : undefined,
+              points: node.commands.map((command) => {
+                if (command.op === 'Z')
+                  return { close: true as const }
+                const point = { x: inch(command.x), y: inch(command.y) }
+                if (command.op === 'C')
+                  return { ...point, curve: { type: 'cubic' as const, x1: inch(command.x1), y1: inch(command.y1), x2: inch(command.x2), y2: inch(command.y2) } }
+                if (command.op === 'Q')
+                  return { ...point, curve: { type: 'quadratic' as const, x1: inch(command.x1), y1: inch(command.y1) } }
+                return { ...point, moveTo: command.op === 'M' }
+              }),
+            })
             break
         }
       }
@@ -367,5 +400,34 @@ export async function buildPptx(
       slide.addNotes(ir.note)
   }
 
-  return await pptx.write({ outputType: 'nodebuffer' }) as Buffer
+  const buffer = await pptx.write({ outputType: 'nodebuffer' }) as Buffer
+  if (!gradients.size)
+    return buffer
+  // PptxGenJS has no gradient API. Replace only the named shape's fill;
+  // retain geometry, outlines, shadows, text, and relationships unchanged.
+  const zip = await JSZip.loadAsync(buffer)
+  for (const [index, patches] of gradients) {
+    const path = `ppt/slides/slide${index}.xml`
+    const xml = await zip.file(path)!.async('string')
+    const updated = xml.replace(/<p:sp\b[^>]*>[\s\S]*?<\/p:sp>/g, (shape) => {
+      const name = /<p:cNvPr\s[^>]*\bname="([^"]*)"/.exec(shape)?.[1]
+      const gradient = name && patches.get(name)
+      if (!gradient)
+        return shape
+      patches.delete(name)
+      const stops = gradient.stops.map(stop => `<a:gs pos="${Math.round(stop.offset * 100000)}"><a:srgbClr val="${hex(stop.color)}"><a:alpha val="${Math.round(stop.color.a * 100000)}"/></a:srgbClr></a:gs>`).join('')
+      const fill = `<a:gradFill rotWithShape="1"><a:gsLst>${stops}</a:gsLst><a:lin ang="${Math.round(gradient.angle * 60000)}" scaled="0"/></a:gradFill>`
+      return shape.replace(/<p:spPr>([\s\S]*?)<\/p:spPr>/, (_, properties: string) => {
+        // The first fill is the shape fill, before any line or effect fill.
+        const replaced = properties.replace(/<a:noFill\s*\/>|<a:solidFill>[\s\S]*?<\/a:solidFill>/, fill)
+        if (replaced === properties)
+          throw new Error(`Missing gradient placeholder: ${name}`)
+        return `<p:spPr>${replaced}</p:spPr>`
+      })
+    })
+    if (patches.size)
+      throw new Error(`Missing gradient shapes on slide ${index}`)
+    zip.file(path, updated)
+  }
+  return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
 }

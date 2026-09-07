@@ -31,6 +31,7 @@ export interface ExportOptions {
   width?: number
   height?: number
   withClicks?: boolean
+  pptxStrict?: boolean
   executablePath?: string
   withToc?: boolean
   /**
@@ -182,6 +183,7 @@ export async function exportSlides({
   width = 1920,
   height = 1080,
   withClicks = false,
+  pptxStrict = false,
   executablePath = undefined,
   withToc = false,
   perSlide = false,
@@ -189,6 +191,8 @@ export async function exportSlides({
   waitUntil,
   omitBackground = false,
 }: ExportOptions) {
+  if (pptxStrict && format !== 'pptx-editable')
+    throw new Error('[slidev] `--pptx-strict` requires `--format pptx-editable`')
   const pages: number[] = parseRangeString(total, range)
 
   const { chromium } = await importPlaywright()
@@ -557,7 +561,7 @@ export async function exportSlides({
     }
 
     const { exportPptxEditable, reportEditableExport } = await import('./pptx')
-    const result = await exportPptxEditable({ page, slides, width, height, pages, go }, output)
+    const result = await exportPptxEditable({ page, slides, width, height, pages, go, strict: pptxStrict }, output)
     // So the "exported to ..." line names the file that was actually written.
     output = result.output
 
@@ -607,6 +611,7 @@ export function getExportOptions(args: ExportArgs, options: ResolvedSlidevOption
     ...clearUndefined({
       waitUntil: args['wait-until'],
       withClicks: args['with-clicks'],
+      pptxStrict: args['pptx-strict'],
       executablePath: args['executable-path'],
       withToc: args['with-toc'],
       perSlide: args['per-slide'],
@@ -623,6 +628,7 @@ export function getExportOptions(args: ExportArgs, options: ResolvedSlidevOption
     range,
     dark,
     withClicks,
+    pptxStrict,
     executablePath,
     withToc,
     perSlide,
@@ -647,6 +653,7 @@ export function getExportOptions(args: ExportArgs, options: ResolvedSlidevOption
     // Both pptx formats default to one slide per click step. Testing the
     // exact string here silently collapsed click steps for the editable one.
     withClicks: withClicks ?? !!format?.startsWith('pptx'),
+    pptxStrict: pptxStrict ?? false,
     executablePath,
     withToc: withToc || false,
     perSlide: perSlide || false,

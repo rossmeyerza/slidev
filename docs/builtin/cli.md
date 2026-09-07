@@ -75,6 +75,7 @@ Options:
 - `--range` (`string`): page ranges to export (example: `'1,4-5,6'`).
 - `--dark` (`boolean`, default: `false`): export as dark theme.
 - `--with-clicks`, `-c` (`boolean`, default: `false`): export pages for every click animation (see https://sli.dev/guide/animations.html#click-animation).
+- `--pptx-strict` (`boolean`, default: `false`): stop editable PPTX export if content needs a screenshot or cannot be exported. Requires `--format pptx-editable`.
 - `--theme`, `-t` (`string`): override theme.
 - `--omit-background` (`boolean`, default: `false`): remove the default browser background
 

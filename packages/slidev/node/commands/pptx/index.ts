@@ -5,6 +5,7 @@ import { dim, yellow } from 'ansis'
 import { buildPptx } from './build'
 import { capture, ID_ATTRIBUTE } from './capture'
 import { normalize } from './normalize'
+import { assertNativeExport } from './strict'
 import { collectSnapshot } from './walker'
 
 /** Everything the editable exporter needs from `exportSlides`, as an explicit object rather than closure scope. */
@@ -17,13 +18,16 @@ export interface PptxExportContext {
   height: number
   /** The 1-based slide numbers `--range` selected; the same defensive filter the image exporter carries. */
   pages: number[]
+  /** Reject screenshots and known omitted content. Original bitmap assets are allowed. */
+  strict?: boolean
   /** Navigate and wait for the deck to settle. `exportSlides` owns this. */
   go: (no: number | string, clicks?: string) => Promise<void>
 }
 
 export interface EditableExportResult {
   slideCount: number
-  fallbackSlides: { no: number, reason: string }[]
+  rasterElements: Record<string, number>
+  fallbackSlides: { no: number, clickIndex: number, reason: string }[]
   fontsNamed: string[]
   /** Images that could be neither fetched nor screenshotted. */
   imagesDropped: number
@@ -70,7 +74,18 @@ export async function exportPptxEditable(
   ctx.slides.forEach((slide, index) => notes.set(index + 1, slide.note))
 
   const { slides, rasterRequests, unparsedColors } = normalize(snapshot, { notes })
-  const report = await capture(ctx.page, slides, rasterRequests)
+  if (ctx.strict)
+    assertNativeExport(slides, unparsedColors, snapshot.unplaceablePseudos)
+  const report = await capture(ctx.page, slides, rasterRequests, { strict: ctx.strict })
+  const rasterElements: Record<string, number> = {}
+  for (const slide of slides) {
+    if (slide.fallbackPng)
+      continue
+    for (const node of slide.nodes) {
+      if (node.kind === 'raster')
+        rasterElements[node.reason] = (rasterElements[node.reason] ?? 0) + 1
+    }
+  }
 
   const title = ctx.slides[0]
   // A bundler or CJS interop layer can hand back the constructor itself rather
@@ -95,6 +110,7 @@ export async function exportPptxEditable(
   return {
     output: written,
     slideCount: slides.length,
+    rasterElements,
     fallbackSlides: report.fallbackSlides,
     imagesDropped: report.imagesDropped,
     isolationMissed: report.isolationMissed,
@@ -108,8 +124,12 @@ export async function exportPptxEditable(
 
 /** Print what the export could not do, after the progress bar has stopped. */
 export function reportEditableExport(result: EditableExportResult): void {
+  if (Object.keys(result.rasterElements).length) {
+    console.warn(yellow(`  element pictures: ${Object.entries(result.rasterElements).map(([reason, count]) => `${reason} (${count})`).join(', ')}`))
+    console.warn(dim('  use --pptx-strict to reject screenshot fallbacks'))
+  }
   for (const slide of result.fallbackSlides)
-    console.warn(yellow(`  slide ${slide.no}: exported as an image (${slide.reason})`))
+    console.warn(yellow(`  slide ${slide.no}, click ${slide.clickIndex}: exported as an image (${slide.reason})`))
   if (result.imagesDropped)
     console.warn(yellow(`  ${result.imagesDropped} image(s) could not be read and were left out`))
   if (result.rastersFailed)

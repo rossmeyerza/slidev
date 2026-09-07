@@ -1,4 +1,4 @@
-import type { RawNode, RawSlide, RawSnapshot, RawStyle } from './ir'
+import type { RawNode, RawSlide, RawSnapshot, RawStyle, RawSvgShape } from './ir'
 
 /**
  * The one function that runs inside the browser. Invariant: zero free variables.
@@ -23,6 +23,9 @@ export function collectSnapshot(options: {
     'color',
     'backgroundColor',
     'backgroundImage',
+    'backgroundSize',
+    'backgroundPosition',
+    'backgroundClip',
     'fontFamily',
     'fontSize',
     'fontWeight',
@@ -339,6 +342,96 @@ export function collectSnapshot(options: {
       }
       if (effectiveOpacity < 1)
         record.opacity = effectiveOpacity
+      if (record.tag === 'SVG') {
+        const shapes: RawSvgShape[] = []
+        let supported = true
+        const measureSvg = (element: Element, opacity: number): void => {
+          const tag = element.tagName.toUpperCase()
+          if (['DEFS', 'TITLE', 'DESC'].includes(tag))
+            return
+          const css = getComputedStyle(element)
+          if (css.display === 'none' || css.visibility === 'hidden' || Number(css.opacity) === 0)
+            return
+          let solidStroke = !css.strokeDasharray || css.strokeDasharray === 'none'
+          const geometry = element as SVGGeometryElement
+          if (!solidStroke && typeof geometry.getTotalLength === 'function' && Number.parseFloat(css.strokeDashoffset) === 0) {
+            // Rough Notation reveals a line with one dash as long as its path.
+            // At offset zero the final state is a solid stroke, not a dashed one.
+            const firstDash = css.strokeDasharray.split(/[\s,]+/)[0]
+            const length = Number(element.getAttribute('pathLength')) || geometry.getTotalLength()
+            solidStroke = !firstDash.includes('%') && Number.parseFloat(firstDash) + 0.001 >= length
+          }
+          // Group compositing, clipping, paint servers and stroke effects need
+          // separate support. Reject the whole SVG rather than lose a part.
+          if ((css.filter && css.filter !== 'none')
+            || (css.clipPath && css.clipPath !== 'none')
+            || (css.maskImage && css.maskImage !== 'none')
+            || (css.mixBlendMode && css.mixBlendMode !== 'normal')
+            || !solidStroke
+            || (css.stroke !== 'none' && css.strokeLinecap !== 'butt')
+            || (css.stroke !== 'none' && css.strokeLinejoin !== 'miter')
+            || (css.markerStart && css.markerStart !== 'none')
+            || (css.markerMid && css.markerMid !== 'none')
+            || (css.markerEnd && css.markerEnd !== 'none')
+            || css.fillRule === 'evenodd'
+            || (css.vectorEffect && css.vectorEffect !== 'none')) {
+            supported = false
+            return
+          }
+          const alpha = opacity * Number(css.opacity || 1)
+          if (tag === 'SVG' || tag === 'G') {
+            // Multiple translucent children need true group opacity, not per-shape alpha.
+            if (Number(css.opacity) < 1 && element.children.length > 1)
+              supported = false
+            for (const child of Array.from(element.children))
+              measureSvg(child, alpha)
+            return
+          }
+          if (!['PATH', 'RECT', 'CIRCLE', 'ELLIPSE', 'LINE', 'POLYLINE', 'POLYGON'].includes(tag)) {
+            supported = false
+            return
+          }
+          const matrix = (element as SVGGraphicsElement).getScreenCTM()
+          if (!matrix) {
+            supported = false
+            return
+          }
+          // Do not discard clipping established by any enclosing SVG viewport.
+          const bounds = element.getBoundingClientRect()
+          let ancestor = element.parentElement
+          while (ancestor && ancestor !== el.parentElement) {
+            if (ancestor.tagName.toUpperCase() === 'SVG' && getComputedStyle(ancestor).overflow !== 'visible') {
+              const viewport = ancestor.getBoundingClientRect()
+              if (bounds.left < viewport.left || bounds.top < viewport.top || bounds.right > viewport.right || bounds.bottom > viewport.bottom)
+                supported = false
+            }
+            ancestor = ancestor.parentElement
+          }
+          const attributes: Record<string, string> = {}
+          for (const attr of Array.from(element.attributes))
+            attributes[attr.name] = attr.value
+          // Resolve CSS geometry and SVG units in the browser, not with parseFloat.
+          for (const key of ['x', 'y', 'width', 'height', 'rx', 'ry', 'cx', 'cy', 'r', 'x1', 'x2', 'y1', 'y2']) {
+            const length = (element as any)[key]?.baseVal
+            if (length && typeof length.value === 'number')
+              attributes[key] = String(length.value)
+          }
+          shapes.push({
+            tag,
+            attributes,
+            matrix: [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e - containerRect.left, matrix.f - containerRect.top],
+            fill: css.fill,
+            stroke: css.stroke,
+            strokeWidth: Number.parseFloat(css.strokeWidth),
+            opacity: alpha,
+            fillOpacity: Number(css.fillOpacity),
+            strokeOpacity: Number(css.strokeOpacity),
+          })
+        }
+        measureSvg(el, inheritedOpacity)
+        if (supported)
+          record.svg = shapes
+      }
       // An inline box that wraps paints once per line, so backgrounds belong to
       // the fragments. Only `inline` proper: an inline-block has one rect.
       if (computed.display === 'inline') {

@@ -39,6 +39,9 @@ export interface RawStyle {
   color: string
   backgroundColor: string
   backgroundImage: string
+  backgroundSize?: string
+  backgroundPosition?: string
+  backgroundClip?: string
   fontFamily: string
   fontSize: string
   fontWeight: string
@@ -82,6 +85,7 @@ export interface RawStyle {
 }
 
 export interface RawNode {
+  svg?: RawSvgShape[]
   /** Index into `RawSnapshot.nodes`, and the value of `data-slidev-export-id`. */
   id: number
   /** Parent's `id`, or -1 for the slide container itself. */
@@ -116,6 +120,31 @@ export interface RawNode {
   marker?: string
   /** Page coordinates. A `::before` or `::after` has no element of its own, so a screenshot clips the page instead of targeting a locator. */
   pageRect?: Rect
+}
+
+export interface RawSvgShape {
+  tag: string
+  attributes: Record<string, string>
+  matrix: [number, number, number, number, number, number]
+  fill: string
+  stroke: string
+  strokeWidth: number
+  opacity: number
+  fillOpacity: number
+  strokeOpacity: number
+}
+
+export type PathCommand
+  = | { op: 'M' | 'L', x: number, y: number }
+    | { op: 'C', x: number, y: number, x1: number, y1: number, x2: number, y2: number }
+    | { op: 'Q', x: number, y: number, x1: number, y1: number }
+    | { op: 'Z' }
+
+export interface IrPath extends IrBase {
+  kind: 'path'
+  commands: PathCommand[]
+  fill?: Rgba
+  stroke?: { color: Rgba, width: number }
 }
 
 export interface RawSlide {
@@ -167,6 +196,7 @@ interface IrBase {
 export interface IrBox extends IrBase {
   kind: 'box'
   fill?: Rgba
+  gradient?: { angle: number, stops: { offset: number, color: Rgba }[] }
   /**
    * Top, right, bottom, left; a side is undefined when it has no visible border.
    * `pptxgenjs` gives a shape a single uniform `line`, so the builder emits
@@ -260,7 +290,7 @@ export interface IrRaster extends IrBase {
   hideDescendants: boolean
 }
 
-export type IrNode = IrBox | IrText | IrImage | IrRaster
+export type IrNode = IrBox | IrText | IrImage | IrRaster | IrPath
 
 export interface SlideIr {
   /** 1-based deck slide number. */

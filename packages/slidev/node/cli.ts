@@ -662,6 +662,10 @@ function exportOptions<T>(args: Argv<T>) {
       type: 'boolean',
       describe: 'export pages for every clicks',
     })
+    .option('pptx-strict', {
+      type: 'boolean',
+      describe: 'fail editable PPTX export if content needs a screenshot or cannot be exported',
+    })
     .option('executable-path', {
       type: 'string',
       describe: 'executable to override playwright bundled browser',

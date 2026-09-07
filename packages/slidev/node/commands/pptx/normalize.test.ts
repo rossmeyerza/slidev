@@ -758,6 +758,11 @@ describe('only backdrops need their descendants hidden', () => {
 })
 
 describe('a slide that cannot be rebuilt falls back to an image', () => {
+  it('does not count an unpainted SVG description as lost visible text', () => {
+    const nodes = [el(0, -1, 'SVG', 0, { svg: [] }), text(1, 0, 'Accessible description', { glyphRects: [], rect: { x: 0, y: 0, w: 0, h: 0 } })]
+    const { slides } = run(nodes, [BASE_STYLE])
+    expect(slides[0].fallbackReason).toBeUndefined()
+  })
   it('falls back when a slide with text yields none', () => {
     // Every text node sits under an <svg>, so all of it rasterizes.
     const nodes = [el(0, -1, 'SVG', 0), text(1, 0, 'invisible to the walk')]
