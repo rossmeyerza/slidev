@@ -14,8 +14,9 @@ import type {
   SlideIr,
 } from './ir'
 import { isVisible, parseColor, withOpacity } from './color'
-import { parseLinearGradient } from './gradient'
+import { parseGradients, splitCssList } from './gradient'
 import { nativeSvg } from './svg'
+import { nativeScale, scaleSnapshot } from './transform'
 
 /**
  * `RawSnapshot` to `SlideIr`: every judgement in the exporter, in one pure module with
@@ -167,7 +168,7 @@ export function rasterReasonFor(node: RawNode, style: RawStyle | undefined): Ras
   // for.
   if (style.webkitBackgroundClip === 'text')
     return 'background-clip-text'
-  if (style.backgroundImage && style.backgroundImage !== 'none' && !parseLinearGradient(style))
+  if (style.backgroundImage && style.backgroundImage !== 'none' && (!parseGradients(style, node.rect) || (node.fragments?.length ?? 0) > 1))
     return 'background-image'
   if (style.filter && style.filter !== 'none')
     return 'filter'
@@ -177,8 +178,18 @@ export function rasterReasonFor(node: RawNode, style: RawStyle | undefined): Ras
     return 'mix-blend-mode'
   if (style.clipPath && style.clipPath !== 'none')
     return 'clip-path'
-  if (style.transform && style.transform !== 'none')
+  if (style.maskImage && style.maskImage !== 'none')
+    return 'mask'
+  if (style.boxShadow && style.boxShadow !== 'none') {
+    const shadows = splitCssList(style.boxShadow)
+    const lengths = [...style.boxShadow.matchAll(/(-?[\d.]+)px/g)].map(match => Number(match[1]))
+    if (shadows.length > 1 || style.boxShadow.includes('inset') || (lengths[3] ?? 0) !== 0)
+      return 'box-shadow'
+  }
+  if (nativeScale(style) === undefined
+    || ((node.tag === '::BEFORE' || node.tag === '::AFTER') && ((style.transform && style.transform !== 'none') || (style.scale && style.scale !== 'none')))) {
     return 'transform'
+  }
   if (style.writingMode && style.writingMode !== 'horizontal-tb')
     return 'writing-mode'
   return undefined
@@ -191,8 +202,8 @@ export function rasterReasonFor(node: RawNode, style: RawStyle | undefined): Ras
  */
 function needsIsolation(reason: RasterReason): boolean {
   return reason === 'background-image'
+    || reason === 'box-shadow'
     || reason === 'backdrop-filter'
-    || reason === 'filter'
     || reason === 'mix-blend-mode'
 }
 
@@ -389,7 +400,8 @@ function buildSlideIr(
   const pageRects = new Map<number, Rect | undefined>()
   const boxed = new Set<number>()
   /** Paint layer per emitted node, parallel to `nodes`. */
-  const layers: { tier: number, z: number }[] = []
+  const layers: number[][] = []
+  const documentOrder = new Map(slide.nodes.map((node, index) => [node.id, index]))
   /** Pseudo-element id to the id of the element it belongs to. */
   const originators = new Map<number, number>()
   const size = slide.size
@@ -405,24 +417,47 @@ function buildSlideIr(
    * Where an element paints: CSS puts positioned elements above in-flow content
    * whatever the document order says. Two tiers and a z-index cover what a slide deck actually does.
    */
-  function layerOf(node: RawNode): { tier: number, z: number } {
-    // The nearest positioned ancestor, not the nearest styled one: a page
-    // counter is a positioned `<footer>` wrapping a plain `<div>`.
+  function layerOf(node: RawNode, kind: IrNode['kind']): number[] {
+    const ancestry: RawNode[] = []
     let current: RawNode | undefined = node
     while (current) {
-      const style = styleOf(current)
-      if (style && style.position !== 'static' && style.position !== '') {
-        const z = Number.parseInt(style.zIndex, 10)
-        return { tier: 1, z: Number.isNaN(z) ? 0 : z }
-      }
+      ancestry.unshift(current)
       current = byId.get(current.parent)
     }
-    return { tier: 0, z: 0 }
+    const key: number[] = []
+    let positioned: RawNode | undefined
+    let context: RawNode | undefined
+    for (const ancestor of ancestry) {
+      const style = styleOf(ancestor)
+      if (!style)
+        continue
+      const z = Number.parseInt(style.zIndex, 10)
+      const positionedHere = !!style.position && style.position !== 'static'
+      const createsContext = (positionedHere && Number.isFinite(z))
+        || (style.transform && style.transform !== 'none')
+        || (style.scale && style.scale !== 'none')
+        || (Number(style.opacity) < 1)
+        || style.isolation === 'isolate'
+        || (style.filter && style.filter !== 'none')
+      if (createsContext) {
+        // A context paints as one unit in its parent. Its background is
+        // behind its own negative-z children, not behind unrelated contexts.
+        key.push(z < 0 ? 1 : z > 0 ? 4 : positionedHere || style.transform !== 'none' ? 3 : 2, Number.isFinite(z) ? z : 0, documentOrder.get(ancestor.id)!)
+        context = ancestor
+        positioned = undefined
+      }
+      else if (positionedHere && !positioned) {
+        positioned = ancestor
+      }
+    }
+    if (context === node && kind !== 'text')
+      return [...key, 0]
+    return [...key, positioned ? 3 : 2, documentOrder.get(positioned?.id ?? node.id)!]
   }
 
   function push(node: IrNode, source: RawNode): void {
     nodes.push(node)
-    layers.push(layerOf(source))
+    layers.push(layerOf(source, node.kind))
   }
 
   function styleOf(node: RawNode): RawStyle | undefined {
@@ -479,8 +514,13 @@ function buildSlideIr(
     // Everything downstream treats array order as paint order, so reorder into
     // CSS paint order first; a stable sort keeps document order within a layer.
     const order = nodes.map((node, index) => ({ node, index, layer: layers[index] }))
-    order.sort((a, b) =>
-      a.layer.tier - b.layer.tier || a.layer.z - b.layer.z || a.index - b.index)
+    order.sort((a, b) => {
+      for (let i = 0; i < Math.min(a.layer.length, b.layer.length); i++) {
+        if (a.layer[i] !== b.layer[i])
+          return a.layer[i] - b.layer[i]
+      }
+      return a.layer.length - b.layer.length || a.index - b.index
+    })
     nodes = order.map(entry => entry.node)
 
     const texts = nodes.filter(n => n.kind === 'text')
@@ -529,7 +569,18 @@ function buildSlideIr(
       originators.set(node.id, node.parent)
     }
     const isolate = needsIsolation(reason)
-    const visible = clipToSlide(node.rect, size)
+    let captureRect = node.rect
+    if (reason === 'box-shadow' && node.pageRect) {
+      let padding = 0
+      for (const shadow of splitCssList(styleOf(node)?.boxShadow ?? '')) {
+        if (shadow.includes('inset'))
+          continue
+        const [x = 0, y = 0, blur = 0, spread = 0] = [...shadow.matchAll(/(-?[\d.]+)px/g)].map(match => Number(match[1]))
+        padding = Math.max(padding, Math.max(Math.abs(x), Math.abs(y)) + blur * 2 + Math.max(0, spread))
+      }
+      captureRect = { x: node.rect.x - padding, y: node.rect.y - padding, w: node.rect.w + padding * 2, h: node.rect.h + padding * 2 }
+    }
+    const visible = clipToSlide(captureRect, size)
     if (!visible)
       return false
     // An element that runs past the slide is captured as a page clip and
@@ -537,7 +588,7 @@ function buildSlideIr(
     // Screenshotting it whole can ask Chromium to rasterize tens of millions
     // of pixels, which kills the renderer.
     const overflows = visible.w !== node.rect.w || visible.h !== node.rect.h
-    if (overflows && node.pageRect) {
+    if ((overflows || reason === 'box-shadow') && node.pageRect) {
       pageRects.set(node.id, {
         x: node.pageRect.x + (visible.x - node.rect.x),
         y: node.pageRect.y + (visible.y - node.rect.y),
@@ -596,10 +647,12 @@ function buildSlideIr(
       return
     boxed.add(node.id)
     const fill = withOpacity(parseColor(style.backgroundColor, unparsed), node.opacity)
-    const gradient = parseLinearGradient(style)
-    if (gradient) {
-      for (const stop of gradient.stops)
-        stop.color = withOpacity(stop.color, node.opacity)!
+    const gradients = (node.fragments?.length ?? 0) <= 1 ? parseGradients(style, node.rect) : undefined
+    if (gradients) {
+      for (const gradient of gradients) {
+        for (const stop of gradient.stops)
+          stop.color = withOpacity(stop.color, node.opacity)!
+      }
     }
     const borders: [Border?, Border?, Border?, Border?] = [
       borderOf(style, 'Top', unparsed),
@@ -611,7 +664,7 @@ function buildSlideIr(
     // Chromium keeps `border-radius` percentages in the computed value, so a
     // basis is needed: `border-radius: 50%` on a 200px box is 100px, not 50px.
     const radius = parseLength(style.borderTopLeftRadius, Math.min(node.rect.w, node.rect.h))
-    if (!isVisible(fill) && !hasBorder && !gradient)
+    if (!isVisible(fill) && !hasBorder && !gradients)
       return
     const shadow = parseShadow(style.boxShadow, unparsed)
     // One shape per line fragment for a wrapped inline element, as the browser
@@ -622,7 +675,7 @@ function buildSlideIr(
       if (!visible)
         continue
       // Keep the gradient's coordinate system when the slide clips its edge.
-      const rect = gradient ? source : visible
+      const rect = gradients ? source : visible
       const box: IrBox = { kind: 'box', sourceId: node.id, rect }
       if (isVisible(fill))
         box.fill = fill
@@ -632,12 +685,14 @@ function buildSlideIr(
         box.radius = radius
       if (shadow)
         box.shadow = shadow
-      if (gradient) {
+      if (gradients) {
         // A separate base fill preserves alpha compositing under transparent stops.
         if (box.fill)
-          push({ ...box, borders: undefined, shadow: undefined }, node)
-        box.fill = undefined
-        box.gradient = gradient
+          push({ ...box, borders: undefined }, node)
+        const ordered = [...gradients].reverse()
+        for (const [index, gradient] of ordered.entries())
+          push({ ...box, fill: undefined, gradient, shadow: box.fill || index > 0 ? undefined : box.shadow, borders: index === ordered.length - 1 ? box.borders : undefined }, node)
+        continue
       }
       push(box, node)
     }
@@ -1073,6 +1128,7 @@ function buildSlideIr(
 }
 
 export function normalize(snapshot: RawSnapshot, options: NormalizeOptions): NormalizeResult {
+  snapshot = scaleSnapshot(snapshot)
   const unparsedColors = new Set<string>()
   const slides: SlideIr[] = []
   const rasterRequests: RasterRequest[] = []

@@ -19,15 +19,18 @@ Use the generic fixture for a complete CLI test:
 node packages/slidev/bin/slidev.mjs export packages/slidev/node/commands/pptx/fixtures/native.md --format pptx-editable --pptx-strict --with-clicks --output /tmp/native-clicks.pptx
 ```
 
-The file must have three slides. Each slide must contain a native gradient and a custom path. It must not contain picture objects or image backgrounds. With `--with-clicks false`, it must have one slide with all three text states. Speaker notes must remain present.
+The file must have three slides. Each slide must contain native linear and circular radial gradients and a custom path. Its scaled text must stay editable. It must not contain picture objects or image backgrounds. With `--with-clicks false`, it must have one slide with all three text states. Speaker notes must remain present.
+
+Set `SLIDEV_TEST_ARTIFACTS` to an output directory with the browser tests enabled to save the generic layout fixture as PNG and PPTX. Render that PPTX and compare gradient centres, radii, layer order, rounded clipping, and nested text sizes. Circular gradient samples were checked against Chromium with LibreOffice. This does not replace a Microsoft PowerPoint rendering check.
 
 ## Remaining native support
 
 Strict mode is a fallback policy, not a guarantee of complete CSS or SVG support. Keep these follow-up items open:
 
-- Add radial and layered gradients. Test background positioning, border offsets, alpha, and clipping.
+- Add elliptical and repeating gradients, custom background positioning, and border offsets. Elliptical radial fills remain unsupported because the tested group transform did not preserve their geometry in LibreOffice.
 - Add SVG arc commands, rounded rectangles, text, paint servers, and references. Preserve masks and stroke effects or report them as unsupported.
-- Add scaled and rotated HTML containers. Apply the same transform to text metrics, borders, and geometry.
+- Add rotated, skewed, and nonuniformly scaled HTML containers. Uniform positive scale and translation are supported, including nested scales.
+- Add native spread, inset, and multi-layer shadows. Their background currently uses a picture so it does not become an incorrect glow.
 - Add CSS filters and pseudo-elements that currently require a picture or cannot be placed.
 - Check rendered output in Microsoft PowerPoint. XML tests and LibreOffice rendering do not prove identical output there.
 

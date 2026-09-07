@@ -42,6 +42,8 @@ export interface RawStyle {
   backgroundSize?: string
   backgroundPosition?: string
   backgroundClip?: string
+  backgroundBlendMode?: string
+  backgroundAttachment?: string
   fontFamily: string
   fontSize: string
   fontWeight: string
@@ -71,8 +73,13 @@ export interface RawStyle {
   filter: string
   backdropFilter: string
   mixBlendMode: string
+  isolation?: string
   clipPath: string
+  maskImage?: string
   transform: string
+  scale?: string
+  rotate?: string
+  zoom?: string
   writingMode: string
   webkitBackgroundClip: string
   overflow: string
@@ -196,7 +203,7 @@ interface IrBase {
 export interface IrBox extends IrBase {
   kind: 'box'
   fill?: Rgba
-  gradient?: { angle: number, stops: { offset: number, color: Rgba }[] }
+  gradient?: { angle: number, radial?: { cx: number, cy: number, rx: number, ry: number }, stops: { offset: number, color: Rgba }[] }
   /**
    * Top, right, bottom, left; a side is undefined when it has no visible border.
    * `pptxgenjs` gives a shape a single uniform `line`, so the builder emits
@@ -276,6 +283,8 @@ export type RasterReason
     | 'backdrop-filter'
     | 'mix-blend-mode'
     | 'clip-path'
+    | 'mask'
+    | 'box-shadow'
     | 'transform'
     | 'writing-mode'
 

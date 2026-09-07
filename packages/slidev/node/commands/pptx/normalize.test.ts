@@ -308,6 +308,24 @@ describe('element opacity reaches the fill', () => {
 })
 
 describe('paint order follows CSS, not the document', () => {
+  it('keeps a transformed card background below its header and text', () => {
+    const card = style({ transform: 'matrix(0.8, 0, 0, 0.8, 0, -5)', backgroundColor: 'rgb(255, 255, 255)' })
+    const header = style({ backgroundColor: 'rgb(200, 60, 0)' })
+    const { slides } = run([el(0, -1, 'SECTION', 1), el(1, 0, 'HEADER', 2), text(2, 1, 'Header')], [BASE_STYLE, card, header])
+    expect(slides[0].nodes.map(node => node.sourceId)).toEqual([0, 1, 2])
+  })
+
+  it('paints a negative-z gradient above its own context background', () => {
+    const context = style({ isolation: 'isolate', position: 'relative', backgroundColor: 'rgb(255, 255, 255)' })
+    const decoration = style({ position: 'absolute', zIndex: '-1', backgroundImage: 'linear-gradient(rgb(255, 0, 0), transparent)' })
+    const { slides } = run([el(0, -1, 'DIV', 1), el(1, 0, '::AFTER', 2), text(2, 0, 'Label')], [BASE_STYLE, context, decoration])
+    expect(slides[0].nodes.map(node => node.sourceId)).toEqual([0, 1, 2])
+  })
+
+  it('reports unsupported spread shadows instead of changing their appearance', () => {
+    const node = el(0, -1, 'DIV', 0)
+    expect(rasterReasonFor(node, style({ boxShadow: 'rgb(255, 120, 0) 0px 0px 0px 3px, rgba(0, 0, 0, .2) 0px 20px 38px 0px' }))).toBe('box-shadow')
+  })
   it('draws a positioned element above in-flow content that comes later', () => {
     const positioned = style({ position: 'absolute' })
     const backdrop = style({ backgroundImage: 'url(/img/scenery.png)' })
@@ -738,6 +756,12 @@ describe('a picture with content over it is captured in isolation', () => {
 })
 
 describe('only backdrops need their descendants hidden', () => {
+  it('keeps filtered text inside its picture so the filter still applies', () => {
+    const { slides } = run([el(0, -1, 'DIV', 1), text(1, 0, 'Filtered label'), el(2, -1, 'P', 0), text(3, 2, 'Editable label')], [BASE_STYLE, style({ filter: 'grayscale(0.62)' })])
+    const raster = slides[0].nodes.find(node => node.kind === 'raster')!
+    expect(raster.hideDescendants).toBe(false)
+    expect(texts(slides[0].nodes).map(node => node.runs[0].text)).toEqual(['Editable label'])
+  })
   it('isolates a backdrop but not a leaf picture', () => {
     const backdrop = run(
       [el(0, -1, 'DIV', 1), el(1, 0, 'DIV', 0), text(2, 1, 'on top')],

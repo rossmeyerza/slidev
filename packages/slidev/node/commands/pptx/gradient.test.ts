@@ -3,7 +3,7 @@ import JSZip from 'jszip'
 import PptxGenJS from 'pptxgenjs'
 import { describe, expect, it } from 'vitest'
 import { buildPptx } from './build'
-import { parseLinearGradient } from './gradient'
+import { drawingStops, parseGradients, parseLinearGradient } from './gradient'
 
 function parse(backgroundImage: string, extra: Partial<RawStyle> = {}) {
   // The browser serializes named colors to rgb() before normalization.
@@ -26,7 +26,7 @@ describe('native linear gradients', () => {
   })
 
   it('leaves unsupported paint to the explicit fallback policy', () => {
-    for (const css of ['radial-gradient(red, blue)', 'linear-gradient(red, blue), linear-gradient(red, blue)', 'linear-gradient(to top right, red, blue)', 'linear-gradient(red -10%, blue)', 'linear-gradient(red 1px, blue)'])
+    for (const css of ['radial-gradient(red, blue)', 'linear-gradient(red, blue), linear-gradient(red, blue)', 'linear-gradient(red -10%, blue)', 'linear-gradient(in oklab, red, blue)'])
       expect(parse(css)).toBeUndefined()
     expect(parse('linear-gradient(red, blue)', { backgroundSize: '50% 50%' })).toBeUndefined()
   })
@@ -46,5 +46,33 @@ describe('native linear gradients', () => {
     expect(xml).toContain('<a:lin ang="0" scaled="0"/>')
     expect(xml).not.toContain('<p:pic>')
     expect(Object.keys(zip.files).filter(path => path.startsWith('ppt/media/') && !zip.files[path].dir)).toEqual([])
+  })
+})
+
+describe('radial and layered gradients', () => {
+  const box = { w: 400, h: 200 }
+  function layers(backgroundImage: string) {
+    return parseGradients({ backgroundImage } as RawStyle, box)
+  }
+  it('resolves circle centres, corner radii, and two-position stops', () => {
+    const gradient = layers('radial-gradient(circle at 25% 50%, rgb(255, 0, 0) 0% 4%, transparent 21%)')![0]
+    expect(gradient.radial).toEqual({ cx: 100, cy: 100, rx: Math.hypot(300, 100), ry: Math.hypot(300, 100) })
+    expect(gradient.stops.map(stop => stop.offset)).toEqual([0, 0.04, 0.21])
+  })
+  it('supports pixel stops and keeps elliptical fills as explicit fallbacks', () => {
+    expect(layers('radial-gradient(ellipse 100px 50px at center, rgb(255, 0, 0), transparent)')).toBeUndefined()
+    const gradient = layers('radial-gradient(circle 100px at center, rgb(255, 0, 0) 20px, transparent 100px)')![0]
+    expect(gradient.radial).toEqual({ cx: 200, cy: 100, rx: 100, ry: 100 })
+    expect(gradient.stops[0].offset).toBe(0.2)
+  })
+  it('keeps the CSS layer order and rejects a partial conversion', () => {
+    expect(layers('radial-gradient(circle, rgb(255, 0, 0), transparent), linear-gradient(90deg, rgb(0, 0, 0), rgb(255, 255, 255))')).toHaveLength(2)
+    expect(layers('linear-gradient(rgb(0, 0, 0), transparent), url(image.png)')).toBeUndefined()
+    expect(layers('radial-gradient(circle at -10% 50%, rgb(0, 0, 0), transparent)')).toBeUndefined()
+  })
+  it('preserves visible color while alpha fades', () => {
+    const stops = drawingStops(layers('radial-gradient(circle, rgb(255, 0, 0), transparent)')![0].stops)
+    expect(stops.length).toBeGreaterThan(3)
+    expect(stops.every(stop => stop.color.r === 255)).toBe(true)
   })
 })

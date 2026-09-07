@@ -82,9 +82,9 @@ $ slidev export --format pptx-editable
 
 The slides are measured in the browser and rebuilt as PowerPoint shapes, so text is selectable and editable, boxes can be moved and recolored, and presenter notes are carried over as usual. This does not replace `--format pptx`, which stays the most visually faithful option.
 
-Supported linear CSS gradients become native PowerPoint fills. SVG rectangles, circles, ellipses, lines, polygons, and supported paths become editable geometry. Path support includes straight segments and cubic and quadratic Bézier curves. Transforms and fill transparency are retained.
+Supported linear and circular radial CSS gradients become native PowerPoint fills. Layered gradients retain their paint order and transparency. Uniform positive scales and translations keep HTML text and boxes editable. Nested scales also adjust font sizes, borders, and shadows. SVG rectangles, circles, ellipses, lines, polygons, and supported paths become editable geometry. Path support includes straight segments and cubic and quadratic Bézier curves.
 
-Some content still needs a picture: SVG text, arc commands, rounded SVG rectangles, paint servers, masks, stroke effects, `<canvas>`, `<iframe>`, videos, KaTeX formulas, radial or layered CSS gradients, `filter`, `backdrop-filter`, `mix-blend-mode`, and `clip-path`. An SVG with unsupported content is captured as a whole, so its parts do not disappear. Linear gradients with custom background sizing, corner directions, or non-percentage stop positions also use this fallback.
+Some content still needs a picture: SVG text, arc commands, rounded SVG rectangles, paint servers, masks, stroke effects, `<canvas>`, `<iframe>`, videos, KaTeX formulas, elliptical or repeating CSS gradients, rotated or skewed HTML, nonuniform scales, `filter`, `backdrop-filter`, `mix-blend-mode`, and `clip-path`. An SVG with unsupported content is captured as a whole, so its parts do not disappear. Gradients with custom background sizing, borders, or centres outside the box also use this fallback. Complex shadows use an element picture while their child text remains editable.
 
 If a slide cannot be rebuilt safely, or ends up mostly pictures anyway, it falls back to the same image export used by `--format pptx`, for that slide alone, and the reason is printed.
 

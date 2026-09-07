@@ -17,7 +17,9 @@ import type {
   SlideIr,
 } from './ir'
 import JSZip from 'jszip'
+import { drawingStops } from './gradient'
 import { INCHES_PER_PX, PT_PER_PX } from './ir'
+import { radialShape, wrapRadial } from './radial'
 
 /**
  * Extra width beyond the measured glyph bounds: PowerPoint sets the same
@@ -182,6 +184,10 @@ function sameBorder(a?: Border, b?: Border): boolean {
 }
 
 function addBox(slide: PptxGenJS.Slide, shapeType: typeof PptxGenJS.ShapeType, node: IrBox, objectName?: string): void {
+  if (node.gradient?.radial) {
+    slide.addShape('custGeom' as PptxGenJS.ShapeType, radialShape(node, objectName!))
+    return
+  }
   const borders = node.borders
   const uniform
     = borders
@@ -334,7 +340,7 @@ export async function buildPptx(
   if (options.subject)
     pptx.subject = options.subject
 
-  const gradients = new Map<number, Map<string, NonNullable<IrBox['gradient']>>>()
+  const gradients = new Map<number, Map<string, IrBox>>()
 
   for (const ir of slides) {
     const slide = pptx.addSlide()
@@ -359,7 +365,7 @@ export async function buildPptx(
             if (node.gradient) {
               const index = slides.indexOf(ir) + 1
               const patches = gradients.get(index) ?? new Map()
-              patches.set(name, node.gradient)
+              patches.set(name, node)
               gradients.set(index, patches)
             }
             break
@@ -411,19 +417,24 @@ export async function buildPptx(
     const xml = await zip.file(path)!.async('string')
     const updated = xml.replace(/<p:sp\b[^>]*>[\s\S]*?<\/p:sp>/g, (shape) => {
       const name = /<p:cNvPr\s[^>]*\bname="([^"]*)"/.exec(shape)?.[1]
-      const gradient = name && patches.get(name)
-      if (!gradient)
+      const node = name ? patches.get(name) : undefined
+      if (!name || !node?.gradient)
         return shape
+      const gradient = node.gradient
       patches.delete(name)
-      const stops = gradient.stops.map(stop => `<a:gs pos="${Math.round(stop.offset * 100000)}"><a:srgbClr val="${hex(stop.color)}"><a:alpha val="${Math.round(stop.color.a * 100000)}"/></a:srgbClr></a:gs>`).join('')
-      const fill = `<a:gradFill rotWithShape="1"><a:gsLst>${stops}</a:gsLst><a:lin ang="${Math.round(gradient.angle * 60000)}" scaled="0"/></a:gradFill>`
-      return shape.replace(/<p:spPr>([\s\S]*?)<\/p:spPr>/, (_, properties: string) => {
+      const stops = drawingStops(gradient.stops).map(stop => `<a:gs pos="${Math.round(stop.offset * 100000)}"><a:srgbClr val="${hex(stop.color)}"><a:alpha val="${Math.round(stop.color.a * 100000)}"/></a:srgbClr></a:gs>`).join('')
+      const shading = gradient.radial
+        ? '<a:path path="circle"><a:fillToRect l="50000" t="50000" r="50000" b="50000"/></a:path>'
+        : `<a:lin ang="${Math.round(gradient.angle * 60000)}" scaled="0"/>`
+      const fill = `<a:gradFill rotWithShape="1"><a:gsLst>${stops}</a:gsLst>${shading}</a:gradFill>`
+      const patched = shape.replace(/<p:spPr>([\s\S]*?)<\/p:spPr>/, (_, properties: string) => {
         // The first fill is the shape fill, before any line or effect fill.
         const replaced = properties.replace(/<a:noFill\s*\/>|<a:solidFill>[\s\S]*?<\/a:solidFill>/, fill)
         if (replaced === properties)
           throw new Error(`Missing gradient placeholder: ${name}`)
         return `<p:spPr>${replaced}</p:spPr>`
       })
+      return gradient.radial ? wrapRadial(patched, node, 1000000 + Number(name.split('-').at(-1))) : patched
     })
     if (patches.size)
       throw new Error(`Missing gradient shapes on slide ${index}`)

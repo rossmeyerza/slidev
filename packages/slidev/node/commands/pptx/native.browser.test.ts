@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises'
 import process from 'node:process'
 import JSZip from 'jszip'
 import { chromium } from 'playwright-chromium'
@@ -38,6 +39,45 @@ it.runIf(!!process.env.SLIDEV_TEST_CHROMIUM)('keeps an overlapping SVG annotatio
     expect(xml).toContain('<a:gradFill')
     expect(xml).toContain('<a:custGeom>')
     expect(xml).not.toContain('<p:pic>')
+  }
+  finally {
+    await browser.close()
+  }
+})
+
+it.runIf(!!process.env.SLIDEV_TEST_CHROMIUM)('exports scaled containers and layered circular gradients', async () => {
+  const browser = await chromium.launch({ executablePath: process.env.SLIDEV_TEST_CHROMIUM })
+  try {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    await page.setContent(`<style>
+      body { margin: 0; font-family: Arial; background: white; }
+      .print-slide-container { width: 800px; height: 600px; position: relative; }
+      .sample { position: absolute; width: 240px; height: 180px; }
+      .circle { left: 20px; top: 20px; background: radial-gradient(circle 110px at 25% 60%, red, blue); }
+      .ellipse { left: 300px; top: 20px; background: radial-gradient(circle 90px at 40% 40%, red, blue); }
+      .layers { left: 20px; top: 240px; border-radius: 40px; background: radial-gradient(circle at 80% 70%, rgba(255, 0, 0, .8), transparent 65%), linear-gradient(to right, blue, white); }
+      .card { position: absolute; left: 350px; top: 240px; width: 260px; padding: 20px; transform: translate(20px, -10px) scale(.8); transform-origin: top left; background: rgb(230, 240, 255); border: 2px solid blue; box-shadow: 0 4px 8px rgba(0, 0, 0, .2); }
+      .card p { margin: 0; font-size: 25px; line-height: 30px; }
+      .nested { transform: scale(.5); transform-origin: top left; }
+    </style><div class="print-slide-container" id="001-01"><div class="sample circle"></div><div class="sample ellipse"></div><div class="sample layers"></div><div class="card"><p>Scaled text</p><div class="nested"><p>Nested scale</p></div></div></div>`)
+    const snapshot = await page.evaluate(collectSnapshot, { containerSelector: '.print-slide-container', idAttribute: 'data-slidev-export-id' })
+    const result = normalize(snapshot, { notes: new Map() })
+    assertNativeExport(result.slides, result.unparsedColors, snapshot.unplaceablePseudos)
+    const texts = result.slides[0].nodes.filter(node => node.kind === 'text')
+    expect(texts.find(node => node.runs.some(run => run.text.includes('Scaled text')))!.runs[0].fontSize).toBeCloseTo(20)
+    expect(texts.find(node => node.runs.some(run => run.text.includes('Nested scale')))!.runs[0].fontSize).toBeCloseTo(10)
+    const buffer = await buildPptx(PptxGenJS, result.slides, { width: 800, height: 600 })
+    const zip = await JSZip.loadAsync(buffer)
+    const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+    expect(xml.match(/<a:gradFill/g)).toHaveLength(4)
+    expect(xml.match(/<a:path path="circle"/g)).toHaveLength(3)
+    expect(xml).not.toContain('<p:pic>')
+    if (process.env.SLIDEV_TEST_ARTIFACTS) {
+      const dir = process.env.SLIDEV_TEST_ARTIFACTS
+      await fs.mkdir(dir, { recursive: true })
+      await fs.writeFile(`${dir}/native-layout.pptx`, buffer)
+      await page.screenshot({ path: `${dir}/browser.png` })
+    }
   }
   finally {
     await browser.close()
